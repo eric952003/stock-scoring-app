@@ -79,36 +79,40 @@ with st.spinner("抓取數據與計算中..."):
 if stock_metrics:
     st.subheader(f"📊 {ticker_input} 當前數據")
     
-    # 預先定義所有欄位的說明文字 (ToolTip)
-    help_text = {
-        "price": "最新一個交易日的收盤價格。",
-        "pe": "股價除以每股盈餘 (EPS)。代表買進後需要多少年回本，數字越小通常代表估值越便宜。",
-        "yield": "過去一年發放的現金股利佔目前股價的百分比。類似銀行定存利率的概念。",
-        "kd": "隨機指標快線(K)。反映近期股價強弱。K>80為短線過熱(超買)；K<20為短線跌深(超賣)。",
-        "ma60": "過去 60 個交易日的平均收盤價，是判斷長線「多頭」或「空頭」的生命線。",
-        "trend": "K > D 為黃金交叉 (短期動能轉強)；K < D 為死亡交叉 (短期動能轉弱)。"
-    }
-    
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("最新收盤價", stock_metrics["收盤價"], help=help_text["price"])
-    col4.metric("KD (K值)", stock_metrics["K值"], help=help_text["kd"])
     
-    # 根據屬性顯示不同欄位並加入說明
+    # 拔除手機上容易破版的 help 參數
+    col1.metric("最新收盤價", stock_metrics["收盤價"])
+    col4.metric("KD (K值)", stock_metrics["K值"])
+    
+    # 根據屬性顯示不同欄位
     if "一般股票" in asset_type:
-        col2.metric("本益比 (P/E)", stock_metrics["本益比"], help=help_text["pe"])
-        col3.metric("殖利率", f"{stock_metrics['殖利率 (%)']} %", help=help_text["yield"])
+        col2.metric("本益比 (P/E)", stock_metrics["本益比"])
+        col3.metric("殖利率", f"{stock_metrics['殖利率 (%)']} %")
     elif "高股息" in asset_type:
-        col2.metric("殖利率 (系統預估)", f"{stock_metrics['殖利率 (%)']} %", help=help_text["yield"])
-        col3.metric("技術指標狀態", "K > D (黃金交叉)" if stock_metrics["K值"] > stock_metrics["D值"] else "K < D (死亡交叉)", help=help_text["trend"])
+        col2.metric("殖利率 (系統預估)", f"{stock_metrics['殖利率 (%)']} %")
+        col3.metric("技術指標狀態", "K > D (黃金交叉)" if stock_metrics["K值"] > stock_metrics["D值"] else "K < D (死亡交叉)")
     else:
-        col2.metric("季線 (60MA)", stock_metrics["MA60"], help=help_text["ma60"])
-        col3.metric("技術指標狀態", "K > D (黃金交叉)" if stock_metrics["K值"] > stock_metrics["D值"] else "K < D (死亡交叉)", help=help_text["trend"])
+        col2.metric("季線 (60MA)", stock_metrics["MA60"])
+        col3.metric("技術指標狀態", "K > D (黃金交叉)" if stock_metrics["K值"] > stock_metrics["D值"] else "K < D (死亡交叉)")
+
+    # --- 新增：專為手機設計的名詞解釋面板 ---
+    with st.expander("💡 點我查看：上方數據名詞解釋"):
+        st.markdown("""
+        * **本益比 (P/E)：** 股價除以每股盈餘。代表買進後需要多少年回本，數字越小通常代表估值越便宜。*(成長股容許較高，高股息要求較低)*
+        * **殖利率 (%)：** 過去一年發放的現金股利佔目前股價的比例。類似銀行定存利率，越高代表領息越豐厚。
+        * **KD (K值)：** 反映近期股價強弱的動能指標。**K > 80** 代表短線過熱 (可能隨時拉回)；**K < 20** 代表短線跌深 (可能隨時反彈)。
+        * **季線 (60MA)：** 過去 60 個交易日的平均收盤價。被視為長線的「生命線」，站上代表多頭，跌破代表空頭。
+        * **技術指標狀態：** 
+            * **黃金交叉 (K > D)：** 短期買盤力道轉強。
+            * **死亡交叉 (K < D)：** 短期賣壓出籠，動能轉弱。
+        """)
 
     st.divider()
     
     # --- 獨立計分引擎 ---
     score = 0
-    score_details = [] # 用來記錄得分細節
+    score_details = []
     
     k, d, price, ma60 = stock_metrics['K值'], stock_metrics['D值'], stock_metrics['收盤價'], stock_metrics['MA60']
     
