@@ -31,10 +31,10 @@ def calculate_technical_indicators(df, n=9):
     return df
 
 @st.cache_data(ttl=3600)
-def fetch_and_calculate(ticker):
+def fetch_and_calculate(ticker, period="1y"):
     try:
         stock = yf.Ticker(ticker)
-        hist = stock.history(period="1y")
+        hist = stock.history(period=period)
         info = stock.info
         if hist.empty: return None, None
             
@@ -62,11 +62,8 @@ def fetch_and_calculate(ticker):
         return None, None
 
 def plot_candlestick_chart(df, ticker):
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                        vertical_spacing=0.03, subplot_titles=(f'{ticker} 近半年走勢圖', 'KD 指標'),
-                        row_width=[0.3, 0.7])
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-                                 increasing_line_color='red', decreasing_line_color='green', name='K線'), row=1, col=1)
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, subplot_titles=(f'{ticker} 近半年走勢圖', 'KD 指標'), row_width=[0.3, 0.7])
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], increasing_line_color='red', decreasing_line_color='green', name='K線'), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['MA60'], line=dict(color='orange', width=2), name='季線 (60MA)'), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['K'], line=dict(color='blue', width=1.5), name='K值'), row=2, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['D'], line=dict(color='orange', width=1.5, dash='dot'), name='D值'), row=2, col=1)
@@ -75,7 +72,6 @@ def plot_candlestick_chart(df, ticker):
     fig.update_layout(height=550, margin=dict(l=0, r=0, t=30, b=0), xaxis_rangeslider_visible=False, hovermode="x unified")
     return fig
 
-# --- 獨立計分引擎 (恢復完整詳細的文字解說) ---
 def get_score_and_details(asset_type, stock_metrics):
     score = 0
     score_details = []
@@ -83,74 +79,107 @@ def get_score_and_details(asset_type, stock_metrics):
     
     if "一般股票" in asset_type:
         pe = stock_metrics['本益比']
-        if 0 < pe < 15: score += 40; score_details.append("✅ 本益比小於 15 (極度便宜): +40 分")
-        elif 15 <= pe < 22: score += 20; score_details.append("✅ 本益比介於 15~22 (估值合理): +20 分")
+        if 0 < pe < 15: score += 40; score_details.append("✅ 本益比小於 15: +40 分")
+        elif 15 <= pe < 22: score += 20; score_details.append("✅ 本益比介於 15~22: +20 分")
         else: score_details.append("❌ 本益比過高或無獲利: +0 分")
-            
         if stock_metrics['殖利率 (%)'] > 4: score += 20; score_details.append("✅ 殖利率大於 4%: +20 分")
         else: score_details.append("❌ 殖利率小於 4%: +0 分")
-            
-        if k > d: score += 20; score_details.append("✅ KD 黃金交叉 (動能向上): +20 分")
-        else: score_details.append("❌ KD 死亡交叉 (動能向下): +0 分")
-            
-        if price > ma60: score += 20; score_details.append("✅ 股價站上季線 (長線多頭): +20 分")
-        else: score_details.append("❌ 股價跌破季線 (長線空頭): +0 分")
+        if k > d: score += 20; score_details.append("✅ KD 黃金交叉: +20 分")
+        else: score_details.append("❌ KD 死亡交叉: +0 分")
+        if price > ma60: score += 20; score_details.append("✅ 股價站上季線: +20 分")
+        else: score_details.append("❌ 股價跌破季線: +0 分")
             
     elif "高股息 ETF" in asset_type:
-        if k < 30: score += 50; score_details.append("✅ KD 極度超賣 (K < 30，適合撿便宜): +50 分")
-        elif k < 50: score += 30; score_details.append("✅ KD 處於中低檔 (K < 50，價格合理): +30 分")
-        else: score_details.append("❌ KD 處於高檔 (追高風險大): +0 分")
-            
-        if k > d: score += 30; score_details.append("✅ KD 黃金交叉 (底部成型): +30 分")
-        else: score_details.append("❌ KD 死亡交叉 (還在探底): +0 分")
-            
-        if price <= ma60: score += 20; score_details.append("✅ 股價跌破季線 (高股息專屬加分，越跌越買): +20 分")
-        else: score_details.append("❌ 股價在季線之上 (乖離較大): +0 分")
+        if k < 30: score += 50; score_details.append("✅ KD 極度超賣 (K < 30): +50 分")
+        elif k < 50: score += 30; score_details.append("✅ KD 處於中低檔 (K < 50): +30 分")
+        else: score_details.append("❌ KD 處於高檔: +0 分")
+        if k > d: score += 30; score_details.append("✅ KD 黃金交叉: +30 分")
+        else: score_details.append("❌ KD 死亡交叉: +0 分")
+        if price <= ma60: score += 20; score_details.append("✅ 股價跌破季線 (越跌越買): +20 分")
+        else: score_details.append("❌ 股價在季線之上: +0 分")
             
     elif "市值型 ETF" in asset_type:
-        if price > ma60: score += 50; score_details.append("✅ 股價站上季線 (順應大盤多頭): +50 分")
-        else: score_details.append("❌ 股價跌破季線 (大盤弱勢): +0 分")
-            
-        if k > d: score += 30; score_details.append("✅ KD 黃金交叉 (動能轉強): +30 分")
-        else: score_details.append("❌ KD 死亡交叉 (動能轉弱): +0 分")
-            
-        if 40 < k < 80: score += 20; score_details.append("✅ K值 位於 40~80 (多方穩健攻擊區): +20 分")
+        if price > ma60: score += 50; score_details.append("✅ 股價站上季線: +50 分")
+        else: score_details.append("❌ 股價跌破季線: +0 分")
+        if k > d: score += 30; score_details.append("✅ KD 黃金交叉: +30 分")
+        else: score_details.append("❌ KD 死亡交叉: +0 分")
+        if 40 < k < 80: score += 20; score_details.append("✅ K值 位於 40~80: +20 分")
         else: score_details.append("❌ K值 過熱或過冷: +0 分")
             
     elif "債券 ETF" in asset_type:
-        if k < 25: score += 60; score_details.append("✅ KD 嚴重超賣 (K < 25，債券極佳買點): +60 分")
-        elif k < 40: score += 30; score_details.append("✅ KD 處於低檔 (K < 40，具備安全邊際): +30 分")
+        if k < 25: score += 60; score_details.append("✅ KD 嚴重超賣 (K < 25): +60 分")
+        elif k < 40: score += 30; score_details.append("✅ KD 處於低檔 (K < 40): +30 分")
         else: score_details.append("❌ KD 處於高檔: +0 分")
-            
-        if k > d: score += 40; score_details.append("✅ KD 黃金交叉 (跌勢停止，確立反轉): +40 分")
-        else: score_details.append("❌ KD 死亡交叉 (還在跌): +0 分")
+        if k > d: score += 40; score_details.append("✅ KD 黃金交叉: +40 分")
+        else: score_details.append("❌ KD 死亡交叉: +0 分")
             
     elif "主動型" in asset_type:
-        if price > ma60: score += 40; score_details.append("✅ 股價站上季線 (多頭排列): +40 分")
-        else: score_details.append("❌ 股價跌破季線 (破壞動能): +0 分")
-            
-        if k > d: score += 30; score_details.append("✅ KD 黃金交叉 (強勢攻擊): +30 分")
-        else: score_details.append("❌ KD 死亡交叉 (攻擊熄火): +0 分")
-            
-        if k > 60: score += 30; score_details.append("✅ K值 大於 60 (強者恆強，動能極佳): +30 分")
-        elif k > 40: score += 10; score_details.append("✅ K值 大於 40 (動能溫和): +10 分")
-        else: score_details.append("❌ K值 低迷 (缺乏主力資金): +0 分")
+        if price > ma60: score += 40; score_details.append("✅ 股價站上季線: +40 分")
+        else: score_details.append("❌ 股價跌破季線: +0 分")
+        if k > d: score += 30; score_details.append("✅ KD 黃金交叉: +30 分")
+        else: score_details.append("❌ KD 死亡交叉: +0 分")
+        if k > 60: score += 30; score_details.append("✅ K值 大於 60 (動能強): +30 分")
+        elif k > 40: score += 10; score_details.append("✅ K值 大於 40: +10 分")
+        else: score_details.append("❌ K值 低迷: +0 分")
 
     return min(score, 100), score_details
 
+# --- 回測引擎函式 ---
+def run_backtest(df, strategy_type):
+    trades = []
+    holding = False
+    buy_price = 0
+    buy_date = None
+    
+    # 避開最前面的 NaN 值 (因為計算 MA60 需要時間)
+    df = df.dropna()
+    
+    for i in range(1, len(df)):
+        curr_k, prev_k = df['K'].iloc[i], df['K'].iloc[i-1]
+        curr_d, prev_d = df['D'].iloc[i], df['D'].iloc[i-1]
+        close, ma60 = df['Close'].iloc[i], df['MA60'].iloc[i]
+        date = df.index[i].strftime('%Y-%m-%d')
+        
+        buy_signal = False
+        sell_signal = False
+        
+        if strategy_type == "波段動能 (順勢)":
+            # 買進：站上季線 且 KD黃金交叉
+            buy_signal = (close > ma60) and (prev_k <= prev_d) and (curr_k > curr_d)
+            # 賣出：跌破季線 或 KD死亡交叉
+            sell_signal = (close < ma60) or ((prev_k >= prev_d) and (curr_k < curr_d))
+        elif strategy_type == "低檔逆勢 (存股)":
+            # 買進：KD 超賣區 (<30) 且 黃金交叉
+            buy_signal = (curr_k < 30) and (prev_k <= prev_d) and (curr_k > curr_d)
+            # 賣出：KD 超買區 (>70) 且 死亡交叉
+            sell_signal = (curr_k > 70) and (prev_k >= prev_d) and (curr_k < curr_d)
+            
+        if buy_signal and not holding:
+            buy_price = close
+            buy_date = date
+            holding = True
+        elif sell_signal and holding:
+            sell_price = close
+            ret = (sell_price - buy_price) / buy_price
+            trades.append({"買進日期": buy_date, "買進價": round(buy_price, 2), "賣出日期": date, "賣出價": round(sell_price, 2), "報酬率(%)": round(ret * 100, 2)})
+            holding = False
+            
+    return pd.DataFrame(trades)
+
 # ==========================================
-# 建立分頁介面 (Tabs)
+# 建立分頁介面 (Tabs) - 新增第三頁
 # ==========================================
-tab1, tab2 = st.tabs(["📊 單檔深度分析", "🔍 批次掃描器"])
+tab1, tab2, tab3 = st.tabs(["📊 單檔深度分析", "🔍 批次掃描器", "⏱️ 歷史回測驗證"])
+
+# 預設股票代碼邏輯
+default_ticker = "2330.TW"
+if "高股息" in asset_type: default_ticker = "00878.TW"
+elif "市值型" in asset_type: default_ticker = "0050.TW"
+elif "債券" in asset_type: default_ticker = "00720B.TW"
+elif "主動型" in asset_type: default_ticker = "00403A.TW"
 
 # --- 第一頁：單檔深度分析 ---
 with tab1:
-    default_ticker = "2330.TW"
-    if "高股息" in asset_type: default_ticker = "00878.TW"
-    elif "市值型" in asset_type: default_ticker = "0050.TW"
-    elif "債券" in asset_type: default_ticker = "00720B.TW"
-    elif "主動型" in asset_type: default_ticker = "00403A.TW"
-    
     ticker_input = st.sidebar.text_input("輸入股票代碼 (台股請加 .TW)", default_ticker)
     
     with st.spinner("抓取數據與繪圖中..."):
@@ -167,21 +196,18 @@ with tab1:
             col3.metric("殖利率", f"{stock_metrics['殖利率 (%)']} %")
         elif "高股息" in asset_type:
             col2.metric("殖利率 (系統預估)", f"{stock_metrics['殖利率 (%)']} %")
-            col3.metric("技術指標狀態", "K > D (黃金交叉)" if stock_metrics["K值"] > stock_metrics["D值"] else "K < D (死亡交叉)")
+            col3.metric("技術指標", "K > D (黃金交叉)" if stock_metrics["K值"] > stock_metrics["D值"] else "K < D (死亡交叉)")
         else:
             col2.metric("季線 (60MA)", stock_metrics["MA60"])
-            col3.metric("技術指標狀態", "K > D (黃金交叉)" if stock_metrics["K值"] > stock_metrics["D值"] else "K < D (死亡交叉)")
+            col3.metric("技術指標", "K > D (黃金交叉)" if stock_metrics["K值"] > stock_metrics["D值"] else "K < D (死亡交叉)")
 
-        # 恢復：名詞解釋的摺疊面板
         with st.expander("💡 點我查看：上方數據名詞解釋"):
             st.markdown("""
             * **本益比 (P/E)：** 股價除以每股盈餘。代表買進後需要多少年回本，數字越小通常代表估值越便宜。
             * **殖利率 (%)：** 過去一年發放的現金股利佔目前股價的比例。類似銀行定存利率，越高代表領息越豐厚。
             * **KD (K值)：** 反映近期股價強弱的動能指標。**K > 80** 代表短線過熱；**K < 20** 代表短線跌深。
             * **季線 (60MA)：** 過去 60 個交易日的平均收盤價。被視為長線的「生命線」，站上代表多頭，跌破代表空頭。
-            * **技術指標狀態：** 
-                * **黃金交叉 (K > D)：** 短期買盤力道轉強。
-                * **死亡交叉 (K < D)：** 短期賣壓出籠，動能轉弱。
+            * **技術指標狀態：** 黃金交叉 (K > D) 短期買盤力道轉強；死亡交叉 (K < D) 短期賣壓出籠，動能轉弱。
             """)
 
         st.divider()
@@ -210,7 +236,6 @@ with tab1:
         st.subheader(f"🎯 綜合評分：{score} / 100")
         st.progress(score / 100)
         
-        # 恢復：完整的計分細節面板
         with st.expander("🧮 算分邏輯大解密與指南 (點擊展開)", expanded=False):
             st.markdown(f"**目前選擇模式：{asset_type}**")
             st.markdown("本系統滿分為 100 分。以下是這檔股票本次拿分的具體細節：")
@@ -222,44 +247,72 @@ with tab1:
 # --- 第二頁：批次掃描器 ---
 with tab2:
     st.markdown("### 🔍 多檔標的批次掃描")
-    st.info("💡 **提示：** 程式會根據左側選單的「標的屬性」來評分。請確保輸入的代碼屬性相同（例如左邊選高股息，右邊就輸入一整串高股息 ETF），算出來的比較才有意義。")
-    
+    st.info("💡 **提示：** 程式會根據左側選單的「標的屬性」來評分。請確保輸入的代碼屬性相同，算出來的比較才有意義。")
     default_batch = "0056.TW, 00878.TW, 00713.TW, 00919.TW, 00929.TW" if "高股息" in asset_type else "2330.TW, 2317.TW, 2454.TW, 2382.TW, 3231.TW"
-    
     batch_input = st.text_area("輸入多檔股票代碼 (請用逗號分隔)：", default_batch)
     
     if st.button("🚀 開始批次掃描"):
         tickers = [t.strip() for t in batch_input.split(",") if t.strip()]
-        
-        if not tickers:
-            st.warning("請至少輸入一檔股票代碼！")
+        if not tickers: st.warning("請至少輸入一檔股票代碼！")
         else:
             progress_bar = st.progress(0)
             status_text = st.empty()
             results = []
-            
             for i, t in enumerate(tickers):
                 status_text.text(f"正在掃描 ({i+1}/{len(tickers)}) : {t} ...")
                 hist, metrics = fetch_and_calculate(t)
-                
                 if metrics:
                     score, _ = get_score_and_details(asset_type, metrics)
                     results.append({
-                        "代碼": t,
-                        "綜合評分": score,
-                        "收盤價": metrics["收盤價"],
+                        "代碼": t, "綜合評分": score, "收盤價": metrics["收盤價"],
                         "趨勢 (季線)": "🟢 多頭" if metrics["收盤價"] > metrics["MA60"] else "🔴 空頭",
                         "短線動能 (KD)": "📈 黃金交叉" if metrics["K值"] > metrics["D值"] else "📉 死亡交叉",
-                        "本益比": metrics.get("本益比", 0),
                         "殖利率 (%)": metrics.get("殖利率 (%)", 0)
                     })
                 progress_bar.progress((i + 1) / len(tickers))
-                
-            status_text.text("✅ 掃描完成！以下是排行榜 (已依分數由高至低排序)：")
-            
+            status_text.text("✅ 掃描完成！以下是排行榜：")
             if results:
-                df_results = pd.DataFrame(results)
-                df_results = df_results.sort_values(by="綜合評分", ascending=False).reset_index(drop=True)
+                df_results = pd.DataFrame(results).sort_values(by="綜合評分", ascending=False).reset_index(drop=True)
                 st.dataframe(df_results, use_container_width=True)
+            else: st.error("無法獲取數據，請檢查格式。")
+
+# --- 第三頁：歷史回測驗證 ---
+with tab3:
+    st.markdown("### ⏱️ 策略歷史回測 (近3年)")
+    st.info("💡 由於免費資料庫無法取得歷史逐日的本益比與配息資料，此回測模組**專注於驗證「技術面濾網（KD與季線）」**的勝率與報酬表現。")
+    
+    col_a, col_b = st.columns(2)
+    backtest_ticker = col_a.text_input("測試股票代碼 (台股請加 .TW)", default_ticker, key="bt_ticker")
+    strategy_choice = col_b.selectbox("選擇回測策略邏輯", ["波段動能 (順勢)", "低檔逆勢 (存股)"])
+    
+    if st.button("📊 執行歷史回測"):
+        with st.spinner("抓取歷史資料與模擬交易中..."):
+            bt_hist, _ = fetch_and_calculate(backtest_ticker, period="3y")
+            
+            if bt_hist is not None and not bt_hist.empty:
+                trade_record = run_backtest(bt_hist, strategy_choice)
+                
+                if not trade_record.empty:
+                    # 計算統計數據
+                    total_trades = len(trade_record)
+                    winning_trades = len(trade_record[trade_record["報酬率(%)"] > 0])
+                    win_rate = (winning_trades / total_trades) * 100
+                    cumulative_return = trade_record["報酬率(%)"].sum()
+                    
+                    st.divider()
+                    st.subheader(f"🏆 回測結果摘要 ({strategy_choice})")
+                    
+                    # 顯示數據卡片
+                    metric_col1, metric_col2, metric_col3 = st.columns(3)
+                    metric_col1.metric("總交易次數", f"{total_trades} 次")
+                    metric_col2.metric("交易勝率", f"{win_rate:.1f} %")
+                    metric_col3.metric("累積報酬率 (單利計算)", f"{cumulative_return:.2f} %")
+                    
+                    # 顯示交易明細
+                    st.markdown("#### 📜 歷史交易明細")
+                    st.dataframe(trade_record, use_container_width=True)
+                    
+                else:
+                    st.warning("📉 在過去 3 年內，該標的沒有觸發任何符合此策略的進出場訊號。")
             else:
-                st.error("所有輸入的代碼皆無法獲取數據，請檢查格式是否正確。")
+                st.error("無法獲取回測資料，請確認代碼是否正確。")
