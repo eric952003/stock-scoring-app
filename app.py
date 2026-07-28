@@ -124,34 +124,25 @@ def get_score_and_details(asset_type, stock_metrics):
 
     return min(score, 100), score_details
 
-# --- 回測引擎函式 ---
 def run_backtest(df, strategy_type):
     trades = []
     holding = False
     buy_price = 0
     buy_date = None
     
-    # 避開最前面的 NaN 值 (因為計算 MA60 需要時間)
     df = df.dropna()
-    
     for i in range(1, len(df)):
         curr_k, prev_k = df['K'].iloc[i], df['K'].iloc[i-1]
         curr_d, prev_d = df['D'].iloc[i], df['D'].iloc[i-1]
         close, ma60 = df['Close'].iloc[i], df['MA60'].iloc[i]
         date = df.index[i].strftime('%Y-%m-%d')
         
-        buy_signal = False
-        sell_signal = False
-        
+        buy_signal, sell_signal = False, False
         if strategy_type == "波段動能 (順勢)":
-            # 買進：站上季線 且 KD黃金交叉
             buy_signal = (close > ma60) and (prev_k <= prev_d) and (curr_k > curr_d)
-            # 賣出：跌破季線 或 KD死亡交叉
             sell_signal = (close < ma60) or ((prev_k >= prev_d) and (curr_k < curr_d))
         elif strategy_type == "低檔逆勢 (存股)":
-            # 買進：KD 超賣區 (<30) 且 黃金交叉
             buy_signal = (curr_k < 30) and (prev_k <= prev_d) and (curr_k > curr_d)
-            # 賣出：KD 超買區 (>70) 且 死亡交叉
             sell_signal = (curr_k > 70) and (prev_k >= prev_d) and (curr_k < curr_d)
             
         if buy_signal and not holding:
@@ -167,11 +158,10 @@ def run_backtest(df, strategy_type):
     return pd.DataFrame(trades)
 
 # ==========================================
-# 建立分頁介面 (Tabs) - 新增第三頁
+# 建立分頁介面 (Tabs) - 擴增為 4 頁
 # ==========================================
-tab1, tab2, tab3 = st.tabs(["📊 單檔深度分析", "🔍 批次掃描器", "⏱️ 歷史回測驗證"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 單檔深度分析", "🔍 批次掃描器", "⏱️ 歷史回測驗證", "🧬 ETF 成分股透視"])
 
-# 預設股票代碼邏輯
 default_ticker = "2330.TW"
 if "高股息" in asset_type: default_ticker = "00878.TW"
 elif "市值型" in asset_type: default_ticker = "0050.TW"
@@ -238,16 +228,14 @@ with tab1:
         
         with st.expander("🧮 算分邏輯大解密與指南 (點擊展開)", expanded=False):
             st.markdown(f"**目前選擇模式：{asset_type}**")
-            st.markdown("本系統滿分為 100 分。以下是這檔股票本次拿分的具體細節：")
-            for detail in score_details: 
-                st.write(detail)
+            for detail in score_details: st.write(detail)
     else:
         st.error("無法獲取數據，請確認代碼。")
 
 # --- 第二頁：批次掃描器 ---
 with tab2:
     st.markdown("### 🔍 多檔標的批次掃描")
-    st.info("💡 **提示：** 程式會根據左側選單的「標的屬性」來評分。請確保輸入的代碼屬性相同，算出來的比較才有意義。")
+    st.info("💡 確保輸入的代碼屬性相同，算出來的比較才有意義。")
     default_batch = "0056.TW, 00878.TW, 00713.TW, 00919.TW, 00929.TW" if "高股息" in asset_type else "2330.TW, 2317.TW, 2454.TW, 2382.TW, 3231.TW"
     batch_input = st.text_area("輸入多檔股票代碼 (請用逗號分隔)：", default_batch)
     
@@ -259,28 +247,24 @@ with tab2:
             status_text = st.empty()
             results = []
             for i, t in enumerate(tickers):
-                status_text.text(f"正在掃描 ({i+1}/{len(tickers)}) : {t} ...")
+                status_text.text(f"掃描中 ({i+1}/{len(tickers)}) : {t} ...")
                 hist, metrics = fetch_and_calculate(t)
                 if metrics:
                     score, _ = get_score_and_details(asset_type, metrics)
                     results.append({
                         "代碼": t, "綜合評分": score, "收盤價": metrics["收盤價"],
                         "趨勢 (季線)": "🟢 多頭" if metrics["收盤價"] > metrics["MA60"] else "🔴 空頭",
-                        "短線動能 (KD)": "📈 黃金交叉" if metrics["K值"] > metrics["D值"] else "📉 死亡交叉",
-                        "殖利率 (%)": metrics.get("殖利率 (%)", 0)
+                        "短線動能 (KD)": "📈 黃金交叉" if metrics["K值"] > metrics["D值"] else "📉 死亡交叉"
                     })
                 progress_bar.progress((i + 1) / len(tickers))
-            status_text.text("✅ 掃描完成！以下是排行榜：")
+            status_text.text("✅ 掃描完成！")
             if results:
                 df_results = pd.DataFrame(results).sort_values(by="綜合評分", ascending=False).reset_index(drop=True)
                 st.dataframe(df_results, use_container_width=True)
-            else: st.error("無法獲取數據，請檢查格式。")
 
 # --- 第三頁：歷史回測驗證 ---
 with tab3:
     st.markdown("### ⏱️ 策略歷史回測 (近3年)")
-    st.info("💡 由於免費資料庫無法取得歷史逐日的本益比與配息資料，此回測模組**專注於驗證「技術面濾網（KD與季線）」**的勝率與報酬表現。")
-    
     col_a, col_b = st.columns(2)
     backtest_ticker = col_a.text_input("測試股票代碼 (台股請加 .TW)", default_ticker, key="bt_ticker")
     strategy_choice = col_b.selectbox("選擇回測策略邏輯", ["波段動能 (順勢)", "低檔逆勢 (存股)"])
@@ -288,12 +272,9 @@ with tab3:
     if st.button("📊 執行歷史回測"):
         with st.spinner("抓取歷史資料與模擬交易中..."):
             bt_hist, _ = fetch_and_calculate(backtest_ticker, period="3y")
-            
             if bt_hist is not None and not bt_hist.empty:
                 trade_record = run_backtest(bt_hist, strategy_choice)
-                
                 if not trade_record.empty:
-                    # 計算統計數據
                     total_trades = len(trade_record)
                     winning_trades = len(trade_record[trade_record["報酬率(%)"] > 0])
                     win_rate = (winning_trades / total_trades) * 100
@@ -301,18 +282,80 @@ with tab3:
                     
                     st.divider()
                     st.subheader(f"🏆 回測結果摘要 ({strategy_choice})")
-                    
-                    # 顯示數據卡片
                     metric_col1, metric_col2, metric_col3 = st.columns(3)
                     metric_col1.metric("總交易次數", f"{total_trades} 次")
                     metric_col2.metric("交易勝率", f"{win_rate:.1f} %")
-                    metric_col3.metric("累積報酬率 (單利計算)", f"{cumulative_return:.2f} %")
+                    metric_col3.metric("累積報酬率", f"{cumulative_return:.2f} %")
                     
-                    # 顯示交易明細
                     st.markdown("#### 📜 歷史交易明細")
                     st.dataframe(trade_record, use_container_width=True)
-                    
-                else:
-                    st.warning("📉 在過去 3 年內，該標的沒有觸發任何符合此策略的進出場訊號。")
+                else: st.warning("📉 在過去 3 年內，該標的沒有觸發任何符合此策略的進出場訊號。")
+            else: st.error("無法獲取回測資料。")
+
+# --- 第四頁：ETF 成分股透視 (X-Ray) ---
+with tab4:
+    st.markdown("### 🧬 ETF 成分股健康度透視 (X-Ray)")
+    st.info("💡 這裡我們直接把台股熱門 ETF 的「前十大成分股」拆解開來，逐一進行健康度評分，幫你提早預判 ETF 未來的續航力！")
+    
+    # 內建熱門高股息 ETF 的前十大成分股清單 (可用於快速掃描)
+    etf_components = {
+        "00878 國泰永續高股息": ["2357.TW", "2449.TW", "2382.TW", "3231.TW", "2379.TW", "2301.TW", "1101.TW", "2891.TW", "2881.TW", "2324.TW"],
+        "0056 元大高股息": ["2317.TW", "2454.TW", "3231.TW", "2303.TW", "2382.TW", "2357.TW", "3034.TW", "2891.TW", "2324.TW", "2353.TW"],
+        "00713 元大台灣高息低波": ["2881.TW", "2882.TW", "2317.TW", "2303.TW", "2886.TW", "2891.TW", "1101.TW", "2382.TW", "5880.TW", "2412.TW"],
+        "00929 復華台灣科技優息": ["2454.TW", "2303.TW", "3034.TW", "2357.TW", "3711.TW", "2382.TW", "2324.TW", "3231.TW", "2379.TW", "4938.TW"]
+    }
+    
+    selected_etf = st.selectbox("請選擇要透視的 ETF", list(etf_components.keys()))
+    
+    if st.button(f"🚀 開始 X-Ray 透視 {selected_etf}"):
+        components = etf_components[selected_etf]
+        progress_bar_xray = st.progress(0)
+        status_text_xray = st.empty()
+        results_xray = []
+        total_score = 0
+        valid_stocks = 0
+        
+        for i, t in enumerate(components):
+            status_text_xray.text(f"正在掃描成分股 ({i+1}/{len(components)}) : {t} ...")
+            hist, metrics = fetch_and_calculate(t)
+            
+            if metrics:
+                # 成分股統一用「一般股票」的邏輯來健檢
+                score, _ = get_score_and_details("一般股票", metrics)
+                total_score += score
+                valid_stocks += 1
+                results_xray.append({
+                    "成分股代碼": t,
+                    "個股健康分數": score,
+                    "收盤價": metrics["收盤價"],
+                    "趨勢 (季線)": "🟢 多頭" if metrics["收盤價"] > metrics["MA60"] else "🔴 空頭",
+                    "短線動能 (KD)": "📈 黃金交叉" if metrics["K值"] > metrics["D值"] else "📉 死亡交叉",
+                    "本益比": metrics.get("本益比", 0)
+                })
+                
+            progress_bar_xray.progress((i + 1) / len(components))
+            
+        status_text_xray.text("✅ 透視完成！")
+        
+        if valid_stocks > 0:
+            avg_score = round(total_score / valid_stocks, 1)
+            st.divider()
+            
+            # 顯示 ETF 整體健康度
+            st.subheader(f"🩺 {selected_etf} 內部健康度總評")
+            col_s1, col_s2 = st.columns([1, 3])
+            col_s1.metric("成分股平均分數", f"{avg_score} / 100")
+            
+            if avg_score >= 70:
+                col_s2.success("✅ **整體動能強勁！** 成分股多數處於多頭或估值合理區間，ETF 續漲或配息機率高。")
+            elif avg_score >= 40:
+                col_s2.info("⏳ **表現中規中矩。** 成分股好壞參半，可能進入盤整，適合定時定額。")
             else:
-                st.error("無法獲取回測資料，請確認代碼是否正確。")
+                col_s2.warning("⚠️ **內部動能疲弱！** 多數成分股跌破季線或估值過高，短期內 ETF 承壓機率大。")
+                
+            # 顯示成分股明細
+            st.markdown("#### 🔍 前十大成分股詳細體檢表")
+            df_xray = pd.DataFrame(results_xray).sort_values(by="個股健康分數", ascending=False).reset_index(drop=True)
+            st.dataframe(df_xray, use_container_width=True)
+        else:
+            st.error("無法獲取成分股數據，請稍後再試。")
