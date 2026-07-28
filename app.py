@@ -41,6 +41,9 @@ def fetch_and_calculate(ticker, period="1y"):
         hist = calculate_technical_indicators(hist)
         latest = hist.iloc[-1]
         
+        # 抓取公司名稱，若抓不到則預設顯示代碼
+        stock_name = info.get('shortName', ticker)
+        
         pe_ratio = info.get('trailingPE', 0)
         if pe_ratio is None or math.isnan(pe_ratio): pe_ratio = 0
             
@@ -49,6 +52,7 @@ def fetch_and_calculate(ticker, period="1y"):
         else: dividend_yield *= 100
         
         metrics = {
+            "名稱": stock_name,
             "收盤價": round(latest['Close'], 2),
             "K值": round(latest['K'], 2) if not pd.isna(latest['K']) else 0,
             "D值": round(latest['D'], 2) if not pd.isna(latest['D']) else 0,
@@ -158,7 +162,7 @@ def run_backtest(df, strategy_type):
     return pd.DataFrame(trades)
 
 # ==========================================
-# 建立分頁介面 (Tabs) - 擴增為 4 頁
+# 建立分頁介面 (Tabs)
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["📊 單檔深度分析", "🔍 批次掃描器", "⏱️ 歷史回測驗證", "🧬 ETF 成分股透視"])
 
@@ -176,7 +180,7 @@ with tab1:
         hist_data, stock_metrics = fetch_and_calculate(ticker_input)
         
     if stock_metrics:
-        st.subheader(f"📊 {ticker_input} 當前數據")
+        st.subheader(f"📊 {ticker_input} ({stock_metrics['名稱']}) 當前數據")
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("最新收盤價", stock_metrics["收盤價"])
         col4.metric("KD (K值)", stock_metrics["K值"])
@@ -252,7 +256,10 @@ with tab2:
                 if metrics:
                     score, _ = get_score_and_details(asset_type, metrics)
                     results.append({
-                        "代碼": t, "綜合評分": score, "收盤價": metrics["收盤價"],
+                        "代碼": t, 
+                        "標的名稱": metrics["名稱"],
+                        "綜合評分": score, 
+                        "收盤價": metrics["收盤價"],
                         "趨勢 (季線)": "🟢 多頭" if metrics["收盤價"] > metrics["MA60"] else "🔴 空頭",
                         "短線動能 (KD)": "📈 黃金交叉" if metrics["K值"] > metrics["D值"] else "📉 死亡交叉"
                     })
@@ -271,7 +278,7 @@ with tab3:
     
     if st.button("📊 執行歷史回測"):
         with st.spinner("抓取歷史資料與模擬交易中..."):
-            bt_hist, _ = fetch_and_calculate(backtest_ticker, period="3y")
+            bt_hist, bt_metrics = fetch_and_calculate(backtest_ticker, period="3y")
             if bt_hist is not None and not bt_hist.empty:
                 trade_record = run_backtest(bt_hist, strategy_choice)
                 if not trade_record.empty:
@@ -281,7 +288,7 @@ with tab3:
                     cumulative_return = trade_record["報酬率(%)"].sum()
                     
                     st.divider()
-                    st.subheader(f"🏆 回測結果摘要 ({strategy_choice})")
+                    st.subheader(f"🏆 回測結果摘要 ({bt_metrics['名稱']} - {strategy_choice})")
                     metric_col1, metric_col2, metric_col3 = st.columns(3)
                     metric_col1.metric("總交易次數", f"{total_trades} 次")
                     metric_col2.metric("交易勝率", f"{win_rate:.1f} %")
@@ -295,9 +302,8 @@ with tab3:
 # --- 第四頁：ETF 成分股透視 (X-Ray) ---
 with tab4:
     st.markdown("### 🧬 ETF 成分股健康度透視 (X-Ray)")
-    st.info("💡 這裡我們直接把台股熱門 ETF 的「前十大成分股」拆解開來，逐一進行健康度評分，幫你提早預判 ETF 未來的續航力！")
+    st.info("💡 這裡我們將 ETF 的「前十大成分股」拆解開來，逐一進行健康度評分，幫你提早預判 ETF 未來的續航力！")
     
-    # 內建熱門高股息 ETF 的前十大成分股清單 (可用於快速掃描)
     etf_components = {
         "00878 國泰永續高股息": ["2357.TW", "2449.TW", "2382.TW", "3231.TW", "2379.TW", "2301.TW", "1101.TW", "2891.TW", "2881.TW", "2324.TW"],
         "0056 元大高股息": ["2317.TW", "2454.TW", "3231.TW", "2303.TW", "2382.TW", "2357.TW", "3034.TW", "2891.TW", "2324.TW", "2353.TW"],
@@ -305,57 +311,71 @@ with tab4:
         "00929 復華台灣科技優息": ["2454.TW", "2303.TW", "3034.TW", "2357.TW", "3711.TW", "2382.TW", "2324.TW", "3231.TW", "2379.TW", "4938.TW"]
     }
     
-    selected_etf = st.selectbox("請選擇要透視的 ETF", list(etf_components.keys()))
+    etf_options = list(etf_components.keys()) + ["➕ 自訂 ETF (手動輸入成分股)"]
+    selected_etf_option = st.selectbox("請選擇要透視的 ETF，或自訂輸入", etf_options)
+    
+    components = []
+    selected_etf = selected_etf_option
+    
+    # 處理自訂 ETF 的輸入介面
+    if selected_etf_option == "➕ 自訂 ETF (手動輸入成分股)":
+        custom_etf_name = st.text_input("📝 請輸入自訂 ETF 名稱 (例如：00919 群益台灣精選高息)", "00919 群益台灣精選高息")
+        custom_components = st.text_area("📋 請輸入成分股代碼 (用逗號分隔，建議輸入前十大即可)", "2603.TW, 2609.TW, 2454.TW, 5483.TW, 2886.TW, 2385.TW, 5347.TW, 2303.TW, 2892.TW, 2615.TW")
+        selected_etf = custom_etf_name
+        components = [t.strip() for t in custom_components.split(",") if t.strip()]
+    else:
+        components = etf_components[selected_etf_option]
     
     if st.button(f"🚀 開始 X-Ray 透視 {selected_etf}"):
-        components = etf_components[selected_etf]
-        progress_bar_xray = st.progress(0)
-        status_text_xray = st.empty()
-        results_xray = []
-        total_score = 0
-        valid_stocks = 0
-        
-        for i, t in enumerate(components):
-            status_text_xray.text(f"正在掃描成分股 ({i+1}/{len(components)}) : {t} ...")
-            hist, metrics = fetch_and_calculate(t)
-            
-            if metrics:
-                # 成分股統一用「一般股票」的邏輯來健檢
-                score, _ = get_score_and_details("一般股票", metrics)
-                total_score += score
-                valid_stocks += 1
-                results_xray.append({
-                    "成分股代碼": t,
-                    "個股健康分數": score,
-                    "收盤價": metrics["收盤價"],
-                    "趨勢 (季線)": "🟢 多頭" if metrics["收盤價"] > metrics["MA60"] else "🔴 空頭",
-                    "短線動能 (KD)": "📈 黃金交叉" if metrics["K值"] > metrics["D值"] else "📉 死亡交叉",
-                    "本益比": metrics.get("本益比", 0)
-                })
-                
-            progress_bar_xray.progress((i + 1) / len(components))
-            
-        status_text_xray.text("✅ 透視完成！")
-        
-        if valid_stocks > 0:
-            avg_score = round(total_score / valid_stocks, 1)
-            st.divider()
-            
-            # 顯示 ETF 整體健康度
-            st.subheader(f"🩺 {selected_etf} 內部健康度總評")
-            col_s1, col_s2 = st.columns([1, 3])
-            col_s1.metric("成分股平均分數", f"{avg_score} / 100")
-            
-            if avg_score >= 70:
-                col_s2.success("✅ **整體動能強勁！** 成分股多數處於多頭或估值合理區間，ETF 續漲或配息機率高。")
-            elif avg_score >= 40:
-                col_s2.info("⏳ **表現中規中矩。** 成分股好壞參半，可能進入盤整，適合定時定額。")
-            else:
-                col_s2.warning("⚠️ **內部動能疲弱！** 多數成分股跌破季線或估值過高，短期內 ETF 承壓機率大。")
-                
-            # 顯示成分股明細
-            st.markdown("#### 🔍 前十大成分股詳細體檢表")
-            df_xray = pd.DataFrame(results_xray).sort_values(by="個股健康分數", ascending=False).reset_index(drop=True)
-            st.dataframe(df_xray, use_container_width=True)
+        if not components:
+            st.warning("請確保成分股清單不是空白的！")
         else:
-            st.error("無法獲取成分股數據，請稍後再試。")
+            progress_bar_xray = st.progress(0)
+            status_text_xray = st.empty()
+            results_xray = []
+            total_score = 0
+            valid_stocks = 0
+            
+            for i, t in enumerate(components):
+                status_text_xray.text(f"正在掃描成分股 ({i+1}/{len(components)}) : {t} ...")
+                hist, metrics = fetch_and_calculate(t)
+                
+                if metrics:
+                    # 成分股統一用「一般股票」的邏輯來健檢
+                    score, _ = get_score_and_details("一般股票", metrics)
+                    total_score += score
+                    valid_stocks += 1
+                    results_xray.append({
+                        "成分股代碼": t,
+                        "成分股名稱": metrics["名稱"],
+                        "個股健康分數": score,
+                        "收盤價": metrics["收盤價"],
+                        "趨勢 (季線)": "🟢 多頭" if metrics["收盤價"] > metrics["MA60"] else "🔴 空頭",
+                        "短線動能 (KD)": "📈 黃金交叉" if metrics["K值"] > metrics["D值"] else "📉 死亡交叉",
+                        "本益比": metrics.get("本益比", 0)
+                    })
+                    
+                progress_bar_xray.progress((i + 1) / len(components))
+                
+            status_text_xray.text("✅ 透視完成！")
+            
+            if valid_stocks > 0:
+                avg_score = round(total_score / valid_stocks, 1)
+                st.divider()
+                
+                st.subheader(f"🩺 {selected_etf} 內部健康度總評")
+                col_s1, col_s2 = st.columns([1, 3])
+                col_s1.metric("成分股平均分數", f"{avg_score} / 100")
+                
+                if avg_score >= 70:
+                    col_s2.success("✅ **整體動能強勁！** 成分股多數處於多頭或估值合理區間，ETF 續漲或配息機率高。")
+                elif avg_score >= 40:
+                    col_s2.info("⏳ **表現中規中矩。** 成分股好壞參半，可能進入盤整，適合定時定額。")
+                else:
+                    col_s2.warning("⚠️ **內部動能疲弱！** 多數成分股跌破季線或估值過高，短期內 ETF 承壓機率大。")
+                    
+                st.markdown("#### 🔍 成分股詳細體檢表")
+                df_xray = pd.DataFrame(results_xray).sort_values(by="個股健康分數", ascending=False).reset_index(drop=True)
+                st.dataframe(df_xray, use_container_width=True)
+            else:
+                st.error("無法獲取成分股數據，請檢查代碼格式是否正確。")
