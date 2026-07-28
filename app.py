@@ -2,6 +2,8 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import math
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # 1. 頁面基本設定
 st.set_page_config(page_title="量化選股決策系統", layout="wide")
@@ -17,7 +19,6 @@ asset_type = st.sidebar.selectbox("選擇標的屬性", [
     "主動型/動能標的 (如 00403A, 飆股)"
 ])
 
-# 根據選擇的屬性，自動給予適合的預設代碼
 default_ticker = "2330.TW"
 if "高股息" in asset_type: default_ticker = "00878.TW"
 elif "市值型" in asset_type: default_ticker = "0050.TW"
@@ -37,6 +38,39 @@ def calculate_technical_indicators(df, n=9):
     df['10_Day_Low'] = df['Low'].rolling(window=10).min()
     return df
 
+# --- 繪製互動式 K 線圖函式 ---
+def plot_candlestick_chart(df, ticker):
+    # 建立包含兩個子圖的圖表 (上: K線與均線, 下: KD)
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                        vertical_spacing=0.03, subplot_titles=(f'{ticker} 近半年走勢圖', 'KD 指標'),
+                        row_width=[0.3, 0.7])
+
+    # 1. 畫 K 線
+    fig.add_trace(go.Candlestick(x=df.index,
+                                 open=df['Open'], high=df['High'],
+                                 low=df['Low'], close=df['Close'],
+                                 increasing_line_color='red', decreasing_line_color='green',
+                                 name='K線'), row=1, col=1)
+    
+    # 2. 畫季線 (MA60)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA60'], 
+                             line=dict(color='orange', width=2), 
+                             name='季線 (60MA)'), row=1, col=1)
+    
+    # 3. 畫 KD 指標
+    fig.add_trace(go.Scatter(x=df.index, y=df['K'], line=dict(color='blue', width=1.5), name='K值'), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['D'], line=dict(color='orange', width=1.5, dash='dot'), name='D值'), row=2, col=1)
+    
+    # 加上超買超賣線 (80, 20)
+    fig.add_hline(y=80, line_dash="dash", line_color="red", row=2, col=1, annotation_text="過熱區")
+    fig.add_hline(y=20, line_dash="dash", line_color="green", row=2, col=1, annotation_text="超賣區")
+
+    # 版面設定優化
+    fig.update_layout(height=550, margin=dict(l=0, r=0, t=30, b=0),
+                      xaxis_rangeslider_visible=False,
+                      hovermode="x unified")
+    return fig
+
 # 3. 獲取資料函式
 @st.cache_data
 def fetch_and_calculate(ticker):
@@ -50,7 +84,6 @@ def fetch_and_calculate(ticker):
         hist = calculate_technical_indicators(hist)
         latest = hist.iloc[-1]
         
-        # 處理 yfinance 可能抓不到的資料 (給予預設值 0)
         pe_ratio = info.get('trailingPE', 0)
         if pe_ratio is None or math.isnan(pe_ratio): pe_ratio = 0
             
@@ -72,7 +105,7 @@ def fetch_and_calculate(ticker):
         return None, None
 
 # 執行運算
-with st.spinner("抓取數據與計算中..."):
+with st.spinner("抓取數據與繪圖中..."):
     hist_data, stock_metrics = fetch_and_calculate(ticker_input)
 
 # 4. 顯示結果與獨立計分引擎
@@ -81,11 +114,9 @@ if stock_metrics:
     
     col1, col2, col3, col4 = st.columns(4)
     
-    # 拔除手機上容易破版的 help 參數
     col1.metric("最新收盤價", stock_metrics["收盤價"])
     col4.metric("KD (K值)", stock_metrics["K值"])
     
-    # 根據屬性顯示不同欄位
     if "一般股票" in asset_type:
         col2.metric("本益比 (P/E)", stock_metrics["本益比"])
         col3.metric("殖利率", f"{stock_metrics['殖利率 (%)']} %")
@@ -96,17 +127,21 @@ if stock_metrics:
         col2.metric("季線 (60MA)", stock_metrics["MA60"])
         col3.metric("技術指標狀態", "K > D (黃金交叉)" if stock_metrics["K值"] > stock_metrics["D值"] else "K < D (死亡交叉)")
 
-    # --- 新增：專為手機設計的名詞解釋面板 ---
     with st.expander("💡 點我查看：上方數據名詞解釋"):
         st.markdown("""
-        * **本益比 (P/E)：** 股價除以每股盈餘。代表買進後需要多少年回本，數字越小通常代表估值越便宜。*(成長股容許較高，高股息要求較低)*
+        * **本益比 (P/E)：** 股價除以每股盈餘。代表買進後需要多少年回本，數字越小通常代表估值越便宜。
         * **殖利率 (%)：** 過去一年發放的現金股利佔目前股價的比例。類似銀行定存利率，越高代表領息越豐厚。
-        * **KD (K值)：** 反映近期股價強弱的動能指標。**K > 80** 代表短線過熱 (可能隨時拉回)；**K < 20** 代表短線跌深 (可能隨時反彈)。
+        * **KD (K值)：** 反映近期股價強弱的動能指標。**K > 80** 代表短線過熱；**K < 20** 代表短線跌深。
         * **季線 (60MA)：** 過去 60 個交易日的平均收盤價。被視為長線的「生命線」，站上代表多頭，跌破代表空頭。
-        * **技術指標狀態：** 
-            * **黃金交叉 (K > D)：** 短期買盤力道轉強。
-            * **死亡交叉 (K < D)：** 短期賣壓出籠，動能轉弱。
+        * **技術指標狀態：** 黃金交叉 (K > D) 短期買盤力道轉強；死亡交叉 (K < D) 短期賣壓出籠。
         """)
+
+    # --- 繪製並顯示互動式圖表 ---
+    st.divider()
+    # 為了讓畫面清晰，我們取近半年的資料來畫圖就好
+    plot_data = hist_data.tail(120) 
+    fig = plot_candlestick_chart(plot_data, ticker_input)
+    st.plotly_chart(fig, use_container_width=True)
 
     st.divider()
     
@@ -197,7 +232,6 @@ if stock_metrics:
     st.progress(score / 100)
     st.markdown(f"### **{score}** / 100")
     
-    # --- 算分邏輯大公開 ---
     with st.expander("🧮 算分邏輯大解密與指南 (點擊展開)", expanded=False):
         st.markdown(f"**目前選擇模式：{asset_type}**")
         st.markdown("本系統滿分為 100 分。以下是這檔股票本次拿分的具體細節：")
