@@ -1,54 +1,62 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import math
 
 # 1. 頁面基本設定
 st.set_page_config(page_title="量化選股決策系統", layout="wide")
-st.title("📈 雙模式量化選股決策系統")
+st.title("📈 多屬性量化選股決策系統")
 
 # 2. 側邊欄設定
 st.sidebar.header("參數設定")
-strategy_mode = st.sidebar.selectbox("選擇評分策略", ["高股息/價值型", "成長型/動能型"])
-ticker_input = st.sidebar.text_input("輸入股票代碼 (台股請加 .TW，如 2330.TW)", "2330.TW")
+asset_type = st.sidebar.selectbox("選擇標的屬性", [
+    "一般股票 (如 2330)",
+    "高股息 ETF (如 0056, 00878, 00713, 00929)",
+    "市值型 ETF (如 0050, 006208)",
+    "債券 ETF (如 00720B, 00679B)",
+    "主動型/動能標的 (如 00403A, 飆股)"
+])
 
-# --- 計算 KD 值與進階均線的函式 ---
+# 根據選擇的屬性，自動給予適合的預設代碼
+default_ticker = "2330.TW"
+if "高股息" in asset_type: default_ticker = "00878.TW"
+elif "市值型" in asset_type: default_ticker = "0050.TW"
+elif "債券" in asset_type: default_ticker = "00720B.TW"
+elif "主動型" in asset_type: default_ticker = "00403A.TW"
+
+ticker_input = st.sidebar.text_input("輸入股票代碼 (台股請加 .TW)", default_ticker)
+
+# --- 計算技術指標函式 ---
 def calculate_technical_indicators(df, n=9):
-    # KD 計算
     low_min = df['Low'].rolling(window=n).min()
     high_max = df['High'].rolling(window=n).max()
     df['RSV'] = 100 * (df['Close'] - low_min) / (high_max - low_min)
     df['K'] = df['RSV'].ewm(com=2, adjust=False).mean()
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
-    
-    # 新增：季線 (60MA) 計算
     df['MA60'] = df['Close'].rolling(window=60).mean()
-    
-    # 新增：近 10 日最低價 (作為停損參考)
     df['10_Day_Low'] = df['Low'].rolling(window=10).min()
-    
     return df
 
-# 3. 定義獲取資料的函式
+# 3. 獲取資料函式
 @st.cache_data
 def fetch_and_calculate(ticker):
     try:
         stock = yf.Ticker(ticker)
-        # 為了計算準確的季線 (60天)，我們需要抓取更長的歷史資料 (至少半年)
         hist = stock.history(period="1y")
         info = stock.info
         
-        if hist.empty:
-            return None, None
+        if hist.empty: return None, None
             
-        # 計算技術指標
         hist = calculate_technical_indicators(hist)
-        
-        # 取得最新一天的數據
         latest = hist.iloc[-1]
         
-        # 取得基本面數據
+        # 處理 yfinance 可能抓不到的資料 (給予預設值 0)
         pe_ratio = info.get('trailingPE', 0)
-        dividend_yield = info.get('dividendYield', 0) * 100 if info.get('dividendYield') else 0
+        if pe_ratio is None or math.isnan(pe_ratio): pe_ratio = 0
+            
+        dividend_yield = info.get('dividendYield', 0)
+        if dividend_yield is None or math.isnan(dividend_yield): dividend_yield = 0
+        else: dividend_yield *= 100
         
         metrics = {
             "收盤價": round(latest['Close'], 2),
@@ -56,8 +64,8 @@ def fetch_and_calculate(ticker):
             "D值": round(latest['D'], 2) if not pd.isna(latest['D']) else 0,
             "MA60": round(latest['MA60'], 2) if not pd.isna(latest['MA60']) else 0,
             "停損參考價": round(latest['10_Day_Low'], 2) if not pd.isna(latest['10_Day_Low']) else 0,
-            "本益比": round(pe_ratio, 2) if pe_ratio else 0,
-            "殖利率 (%)": round(dividend_yield, 2) if dividend_yield else 0
+            "本益比": round(pe_ratio, 2),
+            "殖利率 (%)": round(dividend_yield, 2)
         }
         return hist, metrics
     except Exception as e:
@@ -67,68 +75,104 @@ def fetch_and_calculate(ticker):
 with st.spinner("抓取數據與計算中..."):
     hist_data, stock_metrics = fetch_and_calculate(ticker_input)
 
-# 4. 顯示結果與決策
+# 4. 顯示結果與獨立計分引擎
 if stock_metrics:
     st.subheader(f"📊 {ticker_input} 當前數據")
     
-    # 顯示核心數據
+    # --- 動態顯示介面 (隱藏無效數據) ---
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("最新收盤價", stock_metrics["收盤價"])
-    col2.metric("本益比 (P/E)", stock_metrics["本益比"])
-    col3.metric("殖利率", f"{stock_metrics['殖利率 (%)']} %")
     col4.metric("KD (K值)", stock_metrics["K值"])
     
+    # 針對不需要本益比的 ETF 隱藏該欄位，避免誤導
+    if "一般股票" in asset_type:
+        col2.metric("本益比 (P/E)", stock_metrics["本益比"])
+        col3.metric("殖利率", f"{stock_metrics['殖利率 (%)']} %")
+    elif "高股息" in asset_type:
+        col2.metric("殖利率 (系統預估)", f"{stock_metrics['殖利率 (%)']} %")
+        col3.metric("技術指標狀態", "K > D" if stock_metrics["K值"] > stock_metrics["D值"] else "K < D")
+    else:
+        col2.metric("季線 (60MA)", stock_metrics["MA60"])
+        col3.metric("技術指標狀態", "K > D" if stock_metrics["K值"] > stock_metrics["D值"] else "K < D")
+
     st.divider()
     
-    # --- 評分邏輯 ---
+    # --- 獨立計分引擎 ---
     score = 0
-    if strategy_mode == "高股息/價值型":
-        if stock_metrics['殖利率 (%)'] > 5: score += 40
-        elif stock_metrics['殖利率 (%)'] > 3: score += 20
-        if 0 < stock_metrics['本益比'] < 15: score += 40
-        elif 15 <= stock_metrics['本益比'] < 20: score += 20
-        if stock_metrics['K值'] < 30: score += 20 
-        
-    elif strategy_mode == "成長型/動能型":
-        if stock_metrics['K值'] > stock_metrics['D值']: score += 40 
-        elif stock_metrics['K值'] > 30 and (stock_metrics['D值'] - stock_metrics['K值']) < 5: score += 20
-        if stock_metrics['K值'] > 75: score += 20 
-        elif stock_metrics['K值'] > 50: score += 10 
-        pe = stock_metrics['本益比']
-        if pe == 0: score += 10 
-        elif 0 < pe < 30: score += 40 
-        elif 30 <= pe < 50: score += 20 
+    k, d, price, ma60 = stock_metrics['K值'], stock_metrics['D值'], stock_metrics['收盤價'], stock_metrics['MA60']
     
-    # --- 關鍵決策輔助模組 (新增) ---
+    if "一般股票" in asset_type:
+        # 綜合評分：基本面 + 技術面 + 估值
+        pe = stock_metrics['本益比']
+        if 0 < pe < 15: score += 40
+        elif 15 <= pe < 22: score += 20
+        if stock_metrics['殖利率 (%)'] > 4: score += 20
+        if k > d: score += 20
+        if price > ma60: score += 20
+            
+    elif "高股息 ETF" in asset_type:
+        # 存股邏輯：極度看重 KD 低檔 (逢低買進) 與季線乖離
+        if k < 30: score += 50
+        elif k < 50: score += 30
+        if k > d: score += 30 # 低檔黃金交叉再加分
+        if price <= ma60: score += 20 # 跌破季線反而是高股息的買點 (越跌越買)
+            
+    elif "市值型 ETF" in asset_type:
+        # 大盤邏輯：順勢操作，看重季線趨勢與 KD 動能
+        if price > ma60: score += 50 # 站上季線是核心
+        if k > d: score += 30
+        if 40 < k < 80: score += 20
+            
+    elif "債券 ETF" in asset_type:
+        # 債券邏輯：不看季線(因為受降息預期影響大)，純看短線超跌與反轉訊號
+        if k < 25: score += 60 # 嚴格的超賣區
+        elif k < 40: score += 30
+        if k > d: score += 40 # 明確反轉
+            
+    elif "主動型" in asset_type:
+        # 動能邏輯：只買強勢股，強者恆強
+        if price > ma60: score += 40
+        if k > d: score += 30
+        if k > 60: score += 30 # 強勢區間
+        elif k > 40: score += 10
+
+    # 防呆上限
+    score = min(score, 100)
+
+    # --- 關鍵決策輔助模組 ---
     st.subheader("🛡️ 決策輔助與行動建議")
     
-    # 1. 趨勢保護傘 (MA60 判定)
-    is_above_ma60 = stock_metrics['收盤價'] > stock_metrics['MA60']
+    is_above_ma60 = price > ma60
     trend_color = "🟢" if is_above_ma60 else "🔴"
     trend_text = "多頭排列 (站上季線)" if is_above_ma60 else "空頭弱勢 (跌破季線)"
     
-    st.markdown(f"**長線趨勢：** {trend_color} {trend_text}  *(季線位置: ${stock_metrics['MA60']})*")
+    st.markdown(f"**長線趨勢：** {trend_color} {trend_text}  *(季線位置: ${ma60})*")
     
-    # 2. 自動行動建議
-    if not is_above_ma60:
-        st.warning("⚠️ **警告：股價處於季線之下，屬於長線空頭或弱勢整理格局。為避免「接刀」風險，強烈建議空手觀望，即使綜合評分高也不宜重壓。**")
-    elif score >= 60:
-        st.success(f"✅ **建議：條件滿足，可考慮分批進場。**\n\n🎯 **【強制防守線】：請將停損價設定在近10日低點 $ {stock_metrics['停損參考價']}**。若收盤跌破此價位，代表短期防線崩潰，請無條件撤退，保護本金。")
-    elif score >= 40:
-        st.info("⏳ **建議：動能或估值處於尷尬期。持股者可續抱，空手者建議等待回檔或訊號更明確時再進場。**")
-    else:
-        st.error("🚨 **建議：風險過高或動能嚴重轉弱。建議避開，若有持股應考慮減碼或嚴格執行停損。**")
+    # 根據不同屬性給予不同的文字建議
+    if "高股息" in asset_type or "債券" in asset_type:
+        if score >= 70:
+            st.success(f"✅ **存股建議：目前處於相對低檔或反轉區間，非常適合分批買進建立部位。**\n\n🎯 **【防守線】：若跌破近10日低點 $ {stock_metrics['停損參考價']}，短線可能持續測底，資金有限者可暫緩加碼。**")
+        elif score >= 40:
+            st.info("⏳ **存股建議：位階適中。定期定額者可維持扣款，單筆投入者建議等待更佳的低檔時機。**")
+        else:
+            st.warning("⚠️ **存股建議：目前技術面處於高檔熱度區。高股息與債券不建議在此追高，請耐心等待回檔。**")
+            
+    else: # 一般股票、市值型、主動型 (順勢交易邏輯)
+        if not is_above_ma60 and "主動型" in asset_type:
+            st.error("🚨 **警告：主動型/動能標的跌破季線，動能徹底破壞，請嚴格執行停損或避開。**")
+        elif score >= 70:
+            st.success(f"✅ **波段建議：動能強勢，條件滿足，可考慮分批進場。**\n\n🎯 **【強制防守線】：請將停損價設定在近10日低點 $ {stock_metrics['停損參考價']}**。若收盤跌破此價位，代表防線崩潰，請無條件撤退。")
+        elif score >= 40:
+            st.info("⏳ **波段建議：動能處於尷尬期或正在整理。持股者可續抱，空手者建議觀望。**")
+        else:
+            st.warning("⚠️ **波段建議：風險過高或動能嚴重轉弱。若有持股應考慮減碼。**")
     
     st.divider()
     
     # --- 顯示最終分數 ---
-    st.subheader("🎯 策略綜合評分")
+    st.subheader(f"🎯 {asset_type.split(' ')[0]} 專屬綜合評分")
     st.progress(score / 100)
     st.markdown(f"### **{score}** / 100")
-    
-    # 評分指南摺疊區保留...
-    with st.expander("📖 評分指南與分數意義 (點擊展開)"):
-        st.markdown("分數高低僅代表符合該策略條件的程度。請務必搭配上方的「長線趨勢」與「強制防守線」來制定最終交易計畫。")
     
 else:
     st.error("無法獲取數據，請確認股票代碼是否正確。")
