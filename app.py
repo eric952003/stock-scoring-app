@@ -88,17 +88,34 @@ if stock_metrics:
         if stock_metrics['K值'] < 30: score += 20 # 技術面低檔防禦
         
     elif strategy_mode == "成長型/動能型":
-        # 著重技術面動能與合理的 P/E
-        if stock_metrics['K值'] > stock_metrics['D值']: score += 40 # 黃金交叉或維持強勢
-        if stock_metrics['K值'] > 50: score += 20 # 動能強
-        
-        if 0 < stock_metrics['本益比'] < 25: score += 40 # 成長股容許較高 P/E
+        # 1. 動能趨勢 (滿分 40)
+        if stock_metrics['K值'] > stock_metrics['D值']: 
+            score += 40 # 維持強勢
+        elif stock_metrics['K值'] > 30 and (stock_metrics['D值'] - stock_metrics['K值']) < 5:
+            score += 20 # 雖然死亡交叉，但差距很小，隨時可能反轉
+            
+        # 2. 強勢區間 (滿分 20)
+        if stock_metrics['K值'] > 75:
+            score += 20 # 極強勢
+        elif stock_metrics['K值'] > 50: 
+            score += 10 # 偏強勢
+            
+        # 3. 估值溢價容忍 (滿分 40)
+        pe = stock_metrics['本益比']
+        if pe == 0: 
+            score += 10 # 沒獲利但有動能，給一點基本分
+        elif 0 < pe < 30: 
+            score += 40 # 估值還算合理的成長股
+        elif 30 <= pe < 50: 
+            score += 20 # 估值偏高，但市場願意給予溢價
+        else:
+            score += 0 # PE 超過 50 太危險了不給分
         
     # 顯示最終分數
     st.progress(score / 100)
     st.markdown(f"### 綜合評分： **{score}** / 100")
     
-    # --- 新增：評分指南與說明 ---
+    # --- 評分指南與說明 ---
     st.divider()
     with st.expander("📖 評分指南與分數意義", expanded=True):
         if strategy_mode == "高股息/價值型":
