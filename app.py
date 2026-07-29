@@ -40,7 +40,7 @@ def calculate_technical_indicators(df, n=9):
     df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
     
-    # ATR (14天) - 用來計算合理波動區間
+    # ATR (14天)
     high_low = df['High'] - df['Low']
     high_close = (df['High'] - df['Close'].shift()).abs()
     low_close = (df['Low'] - df['Close'].shift()).abs()
@@ -321,11 +321,22 @@ with tab1:
         else:
             st.metric("季線 (60MA)", stock_metrics["MA60"])
 
+        # --- 補齊所有名詞解釋 (基本面、技術面、籌碼面) ---
         with st.expander("💡 點我查看：個股指標名詞解釋"):
             st.markdown("""
-            * **資金熱度 (量比)：** 當日成交量除以近 5 日平均成交量。大於 1.5 代表有主力資金異常介入。
-            * **ROE (股東權益報酬率)：** 拿股東錢去賺錢的效率。> 15% 為極優良。
-            * **MACD 柱狀體：** 由負翻正 (紅柱) 代表中長線趨勢轉強。
+            **【基本面數據】**
+            * **本益比 (P/E)：** 股價除以每股盈餘。代表買進後需要多少年回本，數字越小通常代表估值越便宜。
+            * **殖利率 (%)：** 過去一年發放的現金股利佔目前股價的比例。越高代表領息越豐厚。
+            * **ROE (股東權益報酬率)：** 公司拿股東的錢去賺錢的效率。大於 10% 為佳，大於 15% 為極優良。
+            * **EPS 成長率：** 公司獲利是否還在成長。避免買到便宜但正在衰退的公司 (價值陷阱)。
+            
+            **【技術面數據】**
+            * **KD (K值)：** 反映近期股價強弱的動能指標。K > 80 代表短線過熱；K < 20 代表短線跌深。
+            * **MACD 柱狀體：** 判斷中長線趨勢。由負翻正 (紅柱) 代表趨勢轉強；由正翻負 (綠柱) 代表趨勢轉弱。
+            * **季線 (60MA)：** 過去 60 個交易日的平均收盤價。被視為長線的「生命線」，站上代表多頭，跌破代表空頭。
+            
+            **【籌碼/動能數據】**
+            * **資金熱度 (量比)：** 當日成交量除以近 5 日平均成交量。大於 1.5 倍代表有主力資金異常介入，此時的突破訊號更可靠。
             """)
 
         st.divider()
@@ -438,6 +449,8 @@ with tab4:
     with st.expander("💡 點我查看：X-Ray 透視指標說明"):
         st.markdown("""
         * **總評分數：** 綜合技術面 (季線、KD、MACD、爆量) 與 基本面 (ROE、EPS成長) 算出的體質分數。分數越高，代表該 ETF 內部成分股正處於發動期。
+        * **ROE(%)：** 公司股東權益報酬率。數值越高，代表該成分股賺錢效率越好。
+        * **EPS年增(%)：** 公司獲利成長性。數值若為負，代表該成分股目前正在衰退。
         """)
         
     etf_options = ["00878 國泰永續高股息", "0056 元大高股息", "00713 元大台灣高息低波", "00929 復華台灣科技優息", "➕ 自訂 ETF (手動輸入成分股)"]
@@ -484,6 +497,7 @@ with tab4:
                     
                 df_xray = pd.DataFrame(results_xray).sort_values(by="健康分數", ascending=False).reset_index(drop=True)
                 st.dataframe(df_xray, use_container_width=True)
+            else: st.error("無法獲取成分股數據，請檢查代碼格式是否正確。")
 
 # --- 第五頁：產業板塊資金雷達 ---
 with tab5:
@@ -497,7 +511,6 @@ with tab5:
         * **短期合理下緣 (支撐)：** 目前股價 `- 1個 ATR`。若股價急殺碰到此價位，通常是短線買點或防守底線。
         """)
         
-    # 台股十大純粹主題 ETF 觀測清單
     theme_etfs = {
         "半導體/晶片": "00891.TW",
         "5G與網通": "00881.TW",
@@ -551,10 +564,8 @@ with tab5:
         status_text_radar.text("✅ 板塊掃描完成！以下是今日資金流向排行榜：")
         
         if results_radar:
-            # 依照「漲跌幅」排序，讓使用者一眼看出漲最多跟跌最多的題材
             df_radar = pd.DataFrame(results_radar)
             df_radar = df_radar.sort_values(by="今日漲跌 (%)", ascending=False).reset_index(drop=True)
-            
             st.dataframe(df_radar, use_container_width=True)
         else:
             st.error("無法連線獲取市場數據，請稍後再試。")
