@@ -21,22 +21,31 @@ asset_type = st.sidebar.selectbox("選擇標的屬性", [
 
 # --- 核心共用函式 ---
 def calculate_technical_indicators(df, n=9):
+    # KD
     low_min = df['Low'].rolling(window=n).min()
     high_max = df['High'].rolling(window=n).max()
     df['RSV'] = 100 * (df['Close'] - low_min) / (high_max - low_min)
     df['K'] = df['RSV'].ewm(com=2, adjust=False).mean()
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     
+    # 均線與成交量
     df['MA60'] = df['Close'].rolling(window=60).mean()
     df['10_Day_Low'] = df['Low'].rolling(window=10).min()
-    
     df['Vol_MA5'] = df['Volume'].rolling(window=5).mean()
     
+    # MACD
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp1 - exp2
     df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
+    
+    # ATR (14天) - 用來計算合理波動區間
+    high_low = df['High'] - df['Low']
+    high_close = (df['High'] - df['Close'].shift()).abs()
+    low_close = (df['Low'] - df['Close'].shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df['ATR'] = tr.rolling(window=14).mean()
     
     return df
 
@@ -50,6 +59,7 @@ def fetch_and_calculate(ticker, period="1y"):
             
         hist = calculate_technical_indicators(hist)
         latest = hist.iloc[-1]
+        prev = hist.iloc[-2] if len(hist) > 1 else latest
         stock_name = info.get('shortName', ticker)
         
         pe_ratio = info.get('trailingPE', 0)
@@ -64,9 +74,12 @@ def fetch_and_calculate(ticker, period="1y"):
         eps_growth = info.get('earningsQuarterlyGrowth', 0)
         eps_growth = 0 if eps_growth is None or math.isnan(eps_growth) else eps_growth * 100
         
+        change_pct = ((latest['Close'] - prev['Close']) / prev['Close']) * 100
+        
         metrics = {
             "名稱": stock_name,
             "收盤價": round(latest['Close'], 2),
+            "漲跌幅 (%)": round(change_pct, 2),
             "K值": round(latest['K'], 2) if not pd.isna(latest['K']) else 0,
             "D值": round(latest['D'], 2) if not pd.isna(latest['D']) else 0,
             "MA60": round(latest['MA60'], 2) if not pd.isna(latest['MA60']) else 0,
@@ -74,6 +87,7 @@ def fetch_and_calculate(ticker, period="1y"):
             "成交量": latest['Volume'],
             "5日均量": latest['Vol_MA5'],
             "MACD_Hist": round(latest['MACD_Hist'], 2),
+            "ATR": round(latest['ATR'], 2) if not pd.isna(latest['ATR']) else 0,
             "本益比": round(pe_ratio, 2),
             "殖利率 (%)": round(dividend_yield, 2),
             "ROE": round(roe, 2),
@@ -89,7 +103,6 @@ def fetch_market_environment():
         twii = yf.Ticker("^TWII").history(period="6mo")
         sox = yf.Ticker("^SOX").history(period="1mo")
         vix = yf.Ticker("^VIX").history(period="1mo")
-
         if twii.empty: return None
 
         twii['MA20'] = twii['Close'].rolling(window=20).mean()
@@ -125,15 +138,12 @@ def plot_candlestick_chart(df, ticker):
     
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], increasing_line_color='red', decreasing_line_color='green', name='K線'), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['MA60'], line=dict(color='orange', width=2), name='季線 (60MA)'), row=1, col=1)
-    
     colors = ['red' if val >= 0 else 'green' for val in df['MACD_Hist']]
     fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], marker_color=colors, name='MACD 柱狀體'), row=2, col=1)
-    
     fig.add_trace(go.Scatter(x=df.index, y=df['K'], line=dict(color='blue', width=1.5), name='K值'), row=3, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['D'], line=dict(color='orange', width=1.5, dash='dot'), name='D值'), row=3, col=1)
     fig.add_hline(y=80, line_dash="dash", line_color="red", row=3, col=1)
     fig.add_hline(y=20, line_dash="dash", line_color="green", row=3, col=1)
-    
     fig.update_layout(height=700, margin=dict(l=0, r=0, t=30, b=0), xaxis_rangeslider_visible=False, hovermode="x unified")
     return fig
 
@@ -196,7 +206,6 @@ def get_score_and_details(asset_type, stock_metrics):
 
     return min(score, 100), score_details
 
-# --- 新增 MACD 條件的回測引擎 ---
 def run_backtest(df, strategy_type):
     trades = []
     holding = False
@@ -216,9 +225,7 @@ def run_backtest(df, strategy_type):
             buy_signal = (close > ma60) and (prev_k <= prev_d) and (curr_k > curr_d)
             sell_signal = (close < ma60) or ((prev_k >= prev_d) and (curr_k < curr_d))
         elif strategy_type == "波段動能 + MACD 雙重確認":
-            # 必須站上季線、KD黃金交叉，且 MACD 為正 (紅柱) 才能買進
             buy_signal = (close > ma60) and (prev_k <= prev_d) and (curr_k > curr_d) and (curr_macd > 0)
-            # 只要跌破季線、KD死叉，或是 MACD 轉綠柱，就立刻獲利了結/停損
             sell_signal = (close < ma60) or ((prev_k >= prev_d) and (curr_k < curr_d)) or (curr_macd < 0)
         elif strategy_type == "低檔逆勢 (存股)":
             buy_signal = (curr_k < 30) and (prev_k <= prev_d) and (curr_k > curr_d)
@@ -237,9 +244,11 @@ def run_backtest(df, strategy_type):
     return pd.DataFrame(trades)
 
 # ==========================================
-# 建立分頁介面 (Tabs)
+# 建立分頁介面 (Tabs) - 擴充為 6 頁
 # ==========================================
-tab_market, tab1, tab2, tab3, tab4 = st.tabs(["🌐 大盤氣象局", "📊 單檔深度分析", "🔍 批次掃描器", "⏱️ 歷史回測", "🧬 ETF 透視"])
+tab_market, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "🌐 大盤氣象局", "📊 單檔深度分析", "🔍 批次掃描器", "⏱️ 歷史回測", "🧬 ETF 透視", "📡 產業資金雷達"
+])
 
 # --- 第零頁：大盤環境氣象局 ---
 with tab_market:
@@ -257,12 +266,12 @@ with tab_market:
         c3.metric("美股 VIX 恐慌指數", vix, "危險 > 20" if vix > 20 else "安全", delta_color="inverse")
         c4.metric("美股費半指數變化", f"{sox_pct}%")
 
-        with st.expander("💡 點我查看：大盤指標名詞解釋 (VIX、ATR、布林通道)"):
+        with st.expander("💡 點我查看：大盤指標名詞解釋"):
             st.markdown("""
             * **VIX 恐慌指數：** 衡量市場對未來波動預期的指標。數值 > 20 開始恐慌；> 30 極度恐慌。
             * **布林通道：** 指數的常態分佈範圍。碰上軌代表過熱，碰下軌代表超跌。
             * **ATR (預估波動區間)：** 近 14 天的平均高低點落差，今日大盤合理的上下震盪點數。
-            * **費城半導體指數 (SOX)：** 台灣股市與美股費半連動性極高。若前晚費半重挫，台股今日通常凶多吉少。
+            * **費城半導體指數 (SOX)：** 若前晚費半重挫，台股今日通常凶多吉少。
             """)
         
         st.divider()
@@ -275,14 +284,13 @@ with tab_market:
         fig_market = plot_market_chart(market_data["TWII_Data"].tail(120))
         st.plotly_chart(fig_market, use_container_width=True)
 
-# --- 預設股票代碼邏輯 ---
+# --- 第一頁：單檔深度分析 ---
 default_ticker = "2330.TW"
 if "高股息" in asset_type: default_ticker = "00878.TW"
 elif "市值型" in asset_type: default_ticker = "0050.TW"
 elif "債券" in asset_type: default_ticker = "00720B.TW"
 elif "主動型" in asset_type: default_ticker = "00403A.TW"
 
-# --- 第一頁：單檔深度分析 ---
 with tab1:
     ticker_input = st.sidebar.text_input("輸入股票代碼 (台股請加 .TW)", default_ticker)
     
@@ -296,8 +304,9 @@ with tab1:
         c1.metric("最新收盤價", stock_metrics["收盤價"])
         c2.metric("MACD 柱狀體", stock_metrics["MACD_Hist"])
         c3.metric("KD (K值)", stock_metrics["K值"])
-        vol_text = "🔥 爆量" if stock_metrics["成交量"] > (stock_metrics["5日均量"] * 1.5) else "正常"
-        c4.metric("成交量狀態", vol_text)
+        vol_ratio = (stock_metrics["成交量"] / stock_metrics["5日均量"]) if stock_metrics["5日均量"] > 0 else 0
+        vol_text = f"🔥 爆量 ({vol_ratio:.1f}倍)" if vol_ratio > 1.5 else f"正常 ({vol_ratio:.1f}倍)"
+        c4.metric("資金熱度 (量比)", vol_text)
         
         if "一般股票" in asset_type:
             c5, c6, c7, c8 = st.columns(4)
@@ -314,11 +323,9 @@ with tab1:
 
         with st.expander("💡 點我查看：個股指標名詞解釋"):
             st.markdown("""
-            * **ROE (股東權益報酬率)：** 公司拿股東的錢去賺錢的效率。> 10% 佳，> 15% 極優。
-            * **EPS 成長率：** 避免買到便宜但正在衰退的公司 (價值陷阱)。
-            * **MACD 柱狀體：** 判斷中長線趨勢。由負翻正 (紅柱) 代表趨勢轉強；由正翻負 (綠柱) 代表趨勢轉弱。
-            * **成交量爆發：** 當日成交量超過過去 5 日平均的 1.5 倍以上，代表主力資金介入，突破訊號更可靠。
-            * **季線 (60MA)：** 長線的「生命線」，站上代表多頭，跌破代表空頭。
+            * **資金熱度 (量比)：** 當日成交量除以近 5 日平均成交量。大於 1.5 代表有主力資金異常介入。
+            * **ROE (股東權益報酬率)：** 拿股東錢去賺錢的效率。> 15% 為極優良。
+            * **MACD 柱狀體：** 由負翻正 (紅柱) 代表中長線趨勢轉強。
             """)
 
         st.divider()
@@ -347,7 +354,7 @@ with tab1:
         st.subheader(f"🎯 綜合評分：{score} / 100")
         st.progress(score / 100)
         
-        with st.expander("🧮 算分邏輯大解密與指南 (點擊展開)", expanded=False):
+        with st.expander("🧮 算分邏輯大解密與指南", expanded=False):
             st.markdown(f"**目前選擇模式：{asset_type}**")
             for detail in score_details: st.write(detail)
     else:
@@ -390,13 +397,12 @@ with tab2:
 # --- 第三頁：歷史回測驗證 ---
 with tab3:
     st.markdown("### ⏱️ 策略歷史回測 (近3年)")
-    st.info("💡 由於免費資料庫限制，此回測模組專注於驗證「技術面濾網（KD、季線、MACD）」的勝率與報酬表現。")
     
     with st.expander("💡 點我查看：回測策略邏輯說明"):
         st.markdown("""
-        * **波段動能 (順勢)：** 股價站上季線，且 KD 發生黃金交叉時買進；跌破季線或 KD 死亡交叉時賣出。適合抓取大多頭行情的強勢股。
+        * **波段動能 (順勢)：** 股價站上季線，且 KD 發生黃金交叉時買進；跌破季線或 KD 死亡交叉時賣出。
         * **波段動能 + MACD 雙重確認：** 條件與順勢相同，但額外要求 MACD 柱狀體必須為紅柱 (大於 0) 才能買進，且 MACD 一翻綠就提前賣出。能有效避開假突破，提高勝率。
-        * **低檔逆勢 (存股)：** KD 低於 30 (超賣區) 且發生黃金交叉時買進；KD 高於 70 (超買區) 且死亡交叉時賣出。適合用在盤整格局或高股息 ETF 區間操作。
+        * **低檔逆勢 (存股)：** KD 低於 30 (超賣區) 且發生黃金交叉時買進；KD 高於 70 且死亡交叉時賣出。
         """)
         
     col_a, col_b = st.columns(2)
@@ -432,8 +438,6 @@ with tab4:
     with st.expander("💡 點我查看：X-Ray 透視指標說明"):
         st.markdown("""
         * **總評分數：** 綜合技術面 (季線、KD、MACD、爆量) 與 基本面 (ROE、EPS成長) 算出的體質分數。分數越高，代表該 ETF 內部成分股正處於發動期。
-        * **ROE(%)：** 公司股東權益報酬率。數值越高，代表該成分股賺錢效率越好。
-        * **EPS年增(%)：** 公司獲利成長性。數值若為負，代表該成分股目前正在衰退。
         """)
         
     etf_options = ["00878 國泰永續高股息", "0056 元大高股息", "00713 元大台灣高息低波", "00929 復華台灣科技優息", "➕ 自訂 ETF (手動輸入成分股)"]
@@ -480,4 +484,77 @@ with tab4:
                     
                 df_xray = pd.DataFrame(results_xray).sort_values(by="健康分數", ascending=False).reset_index(drop=True)
                 st.dataframe(df_xray, use_container_width=True)
-            else: st.error("無法獲取成分股數據，請檢查代碼格式是否正確。")
+
+# --- 第五頁：產業板塊資金雷達 ---
+with tab5:
+    st.markdown("### 📡 產業板塊資金雷達 (Sector Rotation)")
+    st.info("💡 **量化心法：** 資金是推升股價唯一的燃料。這個雷達透過掃描台灣 10 大最具代表性的「主題型 ETF」，幫你找出今日資金正在湧入（或逃離）哪些產業，並用 ATR 推算短期波動極限。")
+    
+    with st.expander("💡 點我查看：資金雷達與極限預估說明"):
+        st.markdown("""
+        * **資金流入熱度 (量比)：** 當日成交量除以近 5 日平均成交量。大於 1 代表資金淨流入，大於 1.5 代表有主力瘋狂湧入該板塊。小於 1 代表資金退潮。
+        * **短期合理上緣 (壓力)：** 目前股價 `+ 1個 ATR` (真實波動幅度)。若股價急拉碰到此價位，代表短線可能漲多，容易遇到賣壓。
+        * **短期合理下緣 (支撐)：** 目前股價 `- 1個 ATR`。若股價急殺碰到此價位，通常是短線買點或防守底線。
+        """)
+        
+    # 台股十大純粹主題 ETF 觀測清單
+    theme_etfs = {
+        "半導體/晶片": "00891.TW",
+        "5G與網通": "00881.TW",
+        "電子科技 (大盤連動)": "0052.TW",
+        "中小型爆發股": "00733.TW",
+        "金融保險": "0055.TW",
+        "生技醫療": "00897.TW",
+        "綠能環保與低碳": "00923.TW",
+        "高股息 (價值防禦)": "00878.TW",
+        "科技高息 (科技防禦)": "00929.TW",
+        "電動車/車用": "00901.TW"
+    }
+    
+    if st.button("🚀 啟動全市場板塊掃描"):
+        progress_bar_radar = st.progress(0)
+        status_text_radar = st.empty()
+        results_radar = []
+        
+        items = list(theme_etfs.items())
+        for i, (theme, ticker) in enumerate(items):
+            status_text_radar.text(f"正在掃描板塊 ({i+1}/{len(items)}) : {theme} ...")
+            hist, metrics = fetch_and_calculate(ticker)
+            
+            if metrics:
+                vol_ratio = (metrics["成交量"] / metrics["5日均量"]) if metrics["5日均量"] > 0 else 0
+                heat = ""
+                if vol_ratio >= 1.5: heat = "🔥🔥🔥 爆量湧入"
+                elif vol_ratio >= 1.2: heat = "🔥 溫和流入"
+                elif vol_ratio < 0.8: heat = "🧊 資金退潮"
+                else: heat = "平穩"
+                
+                close_price = metrics["收盤價"]
+                atr = metrics["ATR"]
+                upper_bound = close_price + atr
+                lower_bound = close_price - atr
+                
+                results_radar.append({
+                    "板塊 / 題材": theme,
+                    "代表 ETF": ticker,
+                    "今日漲跌 (%)": metrics["漲跌幅 (%)"],
+                    "資金流入熱度": heat,
+                    "量比": round(vol_ratio, 2),
+                    "短期合理上緣 (壓力)": f"${upper_bound:.2f}",
+                    "現價": f"${close_price:.2f}",
+                    "短期合理下緣 (支撐)": f"${lower_bound:.2f}",
+                    "MACD趨勢": "🔴 多" if metrics["MACD_Hist"] > 0 else "🟢 空"
+                })
+            
+            progress_bar_radar.progress((i + 1) / len(items))
+            
+        status_text_radar.text("✅ 板塊掃描完成！以下是今日資金流向排行榜：")
+        
+        if results_radar:
+            # 依照「漲跌幅」排序，讓使用者一眼看出漲最多跟跌最多的題材
+            df_radar = pd.DataFrame(results_radar)
+            df_radar = df_radar.sort_values(by="今日漲跌 (%)", ascending=False).reset_index(drop=True)
+            
+            st.dataframe(df_radar, use_container_width=True)
+        else:
+            st.error("無法連線獲取市場數據，請稍後再試。")
