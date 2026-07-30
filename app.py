@@ -97,7 +97,7 @@ def fetch_and_calculate(ticker, period="1y"):
     except Exception as e:
         return None, None
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=300)
 def fetch_market_environment():
     try:
         twii = yf.Ticker("^TWII").history(period="6mo")
