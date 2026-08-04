@@ -4,6 +4,7 @@ import pandas as pd
 import math
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import requests  # 新增：用來建立偽裝連線
 
 # 1. 頁面基本設定
 st.set_page_config(page_title="量化選股決策系統", layout="wide")
@@ -19,28 +20,33 @@ asset_type = st.sidebar.selectbox("選擇標的屬性", [
     "主動型/動能標的 (如 00403A, 飆股)"
 ])
 
+# --- 突破 Yahoo 封鎖的共用連線設定 ---
+def get_yf_session():
+    session = requests.Session()
+    # 偽裝成正常的 Google Chrome 瀏覽器
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+    return session
+
 # --- 核心共用函式 ---
 def calculate_technical_indicators(df, n=9):
-    # KD
     low_min = df['Low'].rolling(window=n).min()
     high_max = df['High'].rolling(window=n).max()
     df['RSV'] = 100 * (df['Close'] - low_min) / (high_max - low_min)
     df['K'] = df['RSV'].ewm(com=2, adjust=False).mean()
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     
-    # 均線與成交量
     df['MA60'] = df['Close'].rolling(window=60).mean()
     df['10_Day_Low'] = df['Low'].rolling(window=10).min()
     df['Vol_MA5'] = df['Volume'].rolling(window=5).mean()
     
-    # MACD
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp1 - exp2
     df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
     
-    # ATR (14天)
     high_low = df['High'] - df['Low']
     high_close = (df['High'] - df['Close'].shift()).abs()
     low_close = (df['Low'] - df['Close'].shift()).abs()
@@ -49,14 +55,18 @@ def calculate_technical_indicators(df, n=9):
     
     return df
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=900)  # 縮短快取時間為 15 分鐘
 def fetch_and_calculate(ticker, period="1y"):
     try:
-        stock = yf.Ticker(ticker)
+        session = get_yf_session()
+        # 帶入偽裝的 session
+        stock = yf.Ticker(ticker, session=session)
         hist = stock.history(period=period)
-        info = stock.info
-        if hist.empty: return None, None
+        
+        if hist.empty: 
+            return None, None
             
+        info = stock.info
         hist = calculate_technical_indicators(hist)
         latest = hist.iloc[-1]
         prev = hist.iloc[-2] if len(hist) > 1 else latest
@@ -95,15 +105,20 @@ def fetch_and_calculate(ticker, period="1y"):
         }
         return hist, metrics
     except Exception as e:
+        print(f"個股獲取錯誤 ({ticker}): {e}")
         return None, None
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=900)
 def fetch_market_environment():
     try:
-        twii = yf.Ticker("^TWII").history(period="6mo")
-        sox = yf.Ticker("^SOX").history(period="1mo")
-        vix = yf.Ticker("^VIX").history(period="1mo")
-        if twii.empty: return None
+        session = get_yf_session()
+        # 大盤指標全面帶入偽裝的 session
+        twii = yf.Ticker("^TWII", session=session).history(period="6mo")
+        sox = yf.Ticker("^SOX", session=session).history(period="1mo")
+        vix = yf.Ticker("^VIX", session=session).history(period="1mo")
+        
+        if twii.empty: 
+            return None
 
         twii['MA20'] = twii['Close'].rolling(window=20).mean()
         twii['MA60'] = twii['Close'].rolling(window=60).mean()
@@ -130,6 +145,7 @@ def fetch_market_environment():
             "ATR": round(latest_twii['ATR'], 2), "SOX_Pct": round(latest_sox_pct, 2), "VIX": round(latest_vix, 2)
         }
     except Exception as e:
+        print(f"大盤獲取錯誤: {e}")
         return None
 
 def plot_candlestick_chart(df, ticker):
@@ -270,19 +286,25 @@ with tab_market:
             st.markdown("""
             * **VIX 恐慌指數：** 衡量市場對未來波動預期的指標。數值 > 20 開始恐慌；> 30 極度恐慌。
             * **布林通道：** 指數的常態分佈範圍。碰上軌代表過熱，碰下軌代表超跌。
-            * **ATR (預估波動區間)：** 近 14 天的平均高低點落差，今日大盤合理的上下震盪點數。
+            * **ATR (預估波動區間)：** 近 14 天的平均高低點落差，今日大盤合理的上下震盪點數。(註：開盤前 Yahoo Finance 的歷史高低點常會因為換日延遲出現異常數字，開盤後即恢復正常)
             * **費城半導體指數 (SOX)：** 若前晚費半重挫，台股今日通常凶多吉少。
             """)
         
         st.divider()
         st.subheader("🧭 當前大盤資金控管建議")
-        if vix > 20 or sox_pct < -3: st.error("🚨 **外部系統性風險警示！** 建議今日多看少做，暫緩新部位買進。")
-        elif m_close > m_ma20 and m_ma20 > m_ma60: st.success("🟢 **多頭順風區：** 環境極佳，個股選股系統勝率高，可積極操作。")
-        elif m_close < m_ma60: st.warning("🔴 **空頭逆風區：** 跌破季線。覆巢之下無完卵，強烈建議降低持股水位至 3 成以下。")
-        else: st.info("🟡 **震盪整理區：** 大盤缺乏明確方向，適合逢低佈局，波段操作見好就收。")
+        if vix > 20 or sox_pct < -3: 
+            st.error("🚨 **外部系統性風險警示！** 建議今日多看少做，暫緩新部位買進。")
+        elif m_close > m_ma20 and m_ma20 > m_ma60: 
+            st.success("🟢 **多頭順風區：** 環境極佳，個股選股系統勝率高，可積極操作。")
+        elif m_close < m_ma60: 
+            st.warning("🔴 **空頭逆風區：** 跌破季線。覆巢之下無完卵，強烈建議降低持股水位至 3 成以下。")
+        else: 
+            st.info("🟡 **震盪整理區：** 大盤缺乏明確方向，適合逢低佈局，波段操作見好就收。")
             
         fig_market = plot_market_chart(market_data["TWII_Data"].tail(120))
         st.plotly_chart(fig_market, use_container_width=True)
+    else:
+        st.error("🚨 無法連線取得大盤數據。請點擊右上角選單「Clear cache」後重試，或稍候再試。")
 
 # --- 第一頁：單檔深度分析 ---
 default_ticker = "2330.TW"
@@ -321,14 +343,13 @@ with tab1:
         else:
             st.metric("季線 (60MA)", stock_metrics["MA60"])
 
-        # --- 補齊所有名詞解釋 (基本面、技術面、籌碼面) ---
         with st.expander("💡 點我查看：個股指標名詞解釋"):
             st.markdown("""
             **【基本面數據】**
             * **本益比 (P/E)：** 股價除以每股盈餘。代表買進後需要多少年回本，數字越小通常代表估值越便宜。
             * **殖利率 (%)：** 過去一年發放的現金股利佔目前股價的比例。越高代表領息越豐厚。
             * **ROE (股東權益報酬率)：** 公司拿股東的錢去賺錢的效率。大於 10% 為佳，大於 15% 為極優良。
-            * **EPS 成長率：** 公司獲利是否還在成長。避免買到便宜但正在衰退的公司 (價值陷阱)。
+            * **EPS 成長率：** 公司獲利是否還在成長。避免買到便宜但正在衰退的公司。
             
             **【技術面數據】**
             * **KD (K值)：** 反映近期股價強弱的動能指標。K > 80 代表短線過熱；K < 20 代表短線跌深。
@@ -369,7 +390,7 @@ with tab1:
             st.markdown(f"**目前選擇模式：{asset_type}**")
             for detail in score_details: st.write(detail)
     else:
-        st.error("無法獲取數據，請確認代碼。")
+        st.error(f"🚨 無法獲取 {ticker_input} 的數據。可能原因：代碼輸入錯誤、Yahoo Finance 防護阻擋。請點擊右上角選單「Clear cache」重試。")
 
 # --- 第二頁：批次掃描器 ---
 with tab2:
@@ -404,6 +425,8 @@ with tab2:
             if results:
                 df_results = pd.DataFrame(results).sort_values(by="綜合評分", ascending=False).reset_index(drop=True)
                 st.dataframe(df_results, use_container_width=True)
+            else:
+                st.error("🚨 掃描失敗。請清除快取後重試。")
 
 # --- 第三頁：歷史回測驗證 ---
 with tab3:
@@ -440,7 +463,7 @@ with tab3:
                     st.markdown("#### 📜 歷史交易明細")
                     st.dataframe(trade_record, use_container_width=True)
                 else: st.warning("📉 過去 3 年內無觸發進出場訊號。")
-            else: st.error("無法獲取回測資料。")
+            else: st.error("🚨 無法獲取回測資料，請清除快取後重試。")
 
 # --- 第四頁：ETF 成分股透視 (X-Ray) ---
 with tab4:
@@ -497,7 +520,7 @@ with tab4:
                     
                 df_xray = pd.DataFrame(results_xray).sort_values(by="健康分數", ascending=False).reset_index(drop=True)
                 st.dataframe(df_xray, use_container_width=True)
-            else: st.error("無法獲取成分股數據，請檢查代碼格式是否正確。")
+            else: st.error("🚨 無法獲取成分股數據，請檢查代碼格式或清除快取後重試。")
 
 # --- 第五頁：產業板塊資金雷達 ---
 with tab5:
@@ -568,4 +591,4 @@ with tab5:
             df_radar = df_radar.sort_values(by="今日漲跌 (%)", ascending=False).reset_index(drop=True)
             st.dataframe(df_radar, use_container_width=True)
         else:
-            st.error("無法連線獲取市場數據，請稍後再試。")
+            st.error("🚨 無法連線獲取市場數據，請清除快取後重試。")
